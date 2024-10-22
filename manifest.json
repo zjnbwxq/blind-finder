@@ -1,0 +1,10 @@
+{
+  "id": "blind-finder",
+  "name": "Blind Finder",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "知识图谱分析和盲点检测工具",
+  "author": "Xiaoqi Weng",
+  "authorUrl": "https://github.com/zjnbwxq",
+  "isDesktopOnly": false
+}
