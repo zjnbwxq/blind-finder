@@ -15,6 +15,8 @@ interface ContentDepthAnalysis {
   codeBlockCount: number;
   formulaCount: number;
   keyPhrases: string[];
+  readabilityScore: number;
+  uniqueWordsCount: number;
   overallScore: number;
 }
 
@@ -133,13 +135,18 @@ export async function analyzeContentDepth(content: string): Promise<ContentDepth
   
   const keyPhrases = await extractKeyPhrases(content);
 
+  const readabilityScore = calculateReadabilityScore(content);
+  const uniqueWordsCount = new Set(content.toLowerCase().match(/\b\w+\b/g)).size;
+
   const overallScore = (
-    wordCount * 0.3 +
-    citationCount * 0.2 +
-    headingLevels * 0.2 +
-    codeBlockCount * 0.15 +
-    formulaCount * 0.15
-  ) / 5;
+    wordCount * 0.2 +
+    citationCount * 0.15 +
+    headingLevels * 0.15 +
+    codeBlockCount * 0.1 +
+    formulaCount * 0.1 +
+    readabilityScore * 0.2 +
+    uniqueWordsCount * 0.1
+  ) / 7;
 
   return {
     wordCount,
@@ -148,8 +155,24 @@ export async function analyzeContentDepth(content: string): Promise<ContentDepth
     codeBlockCount,
     formulaCount,
     keyPhrases,
+    readabilityScore,
+    uniqueWordsCount,
     overallScore
   };
+}
+
+function calculateReadabilityScore(text: string): number {
+
+  const sentences = text.split(/[.!?]+/);
+  const words = text.match(/\b\w+\b/g) || [];
+  const avgWordsPerSentence = words.length / sentences.length;
+  const avgSyllablesPerWord = words.reduce((sum, word) => sum + countSyllables(word), 0) / words.length;
+  return 206.835 - 1.015 * avgWordsPerSentence - 84.6 * avgSyllablesPerWord;
+}
+
+function countSyllables(word: string): number {
+
+  return word.toLowerCase().split(/[aeiou]/).length - 1 || 1;
 }
 
 export async function extractConcepts(content: string): Promise<Concept[]> {
@@ -183,14 +206,29 @@ export async function analyzeConceptRelations(concepts: Concept[], connections: 
       const doc = nlp(content);
       
       if (doc.has(concept.term)) {
-        doc.terms().forEach(term => relatedTerms.add(term.out('normal')));
+        const context = doc.sentences().filter((s: any) => s.has(concept.term)).out('array');
+        
+        context.forEach((sentence: string) => {
+          const terms = nlp(sentence).terms().out('array');
+          terms.forEach((term: string) => {
+            if (term !== concept.term && !isStopWord(term)) {
+              relatedTerms.add(term);
+            }
+          });
+        });
       }
     }
 
-    conceptRelations.set(concept.term, Array.from(relatedTerms).filter(t => t !== concept.term));
+    conceptRelations.set(concept.term, Array.from(relatedTerms));
   }
 
   return conceptRelations;
+}
+
+function isStopWord(word: string): boolean {
+
+  const stopWords = new Set(['the', 'a', 'an', 'in', 'on', 'at', 'for', 'to', 'of', 'and', 'or', 'but']);
+  return stopWords.has(word.toLowerCase());
 }
 
 export async function extractKeyPhrases(content: string): Promise<string[]> {
