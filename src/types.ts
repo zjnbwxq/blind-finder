@@ -4,6 +4,7 @@ export interface GraphNode extends SimulationNodeDatum {
   id: string;
   group: number;
   strength: number;
+  connections: number;
 }
 
 export interface GraphLink {

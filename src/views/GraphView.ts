@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, App } from 'obsidian';
+import { ItemView, WorkspaceLeaf, App, TFile } from 'obsidian';
 import { t } from '../i18n/i18n';
 import * as d3 from 'd3';
 import { GraphNode, GraphLink, GraphData } from '../types';
@@ -7,10 +7,13 @@ import { analyzeGraphConnections, calculateAdvancedConnectionStrength } from '..
 export const GRAPH_VIEW_TYPE = 'blind-finder-graph-view';
 
 export class GraphView extends ItemView {
-  private svg!: d3.Selection<SVGSVGElement, unknown, null, undefined>;
-  private container!: d3.Selection<SVGGElement, unknown, null, undefined>;
+  private canvas!: HTMLCanvasElement;
+  private context!: CanvasRenderingContext2D;
+  private width!: number;
+  private height!: number;
   private simulation!: d3.Simulation<GraphNode, GraphLink>;
-  private zoomBehavior!: d3.ZoomBehavior<SVGSVGElement, unknown>;
+  private sizeScale!: d3.ScaleLinear<number, number>;
+  private colorScale!: d3.ScaleSequential<string>;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -29,94 +32,162 @@ export class GraphView extends ItemView {
     container.empty();
     container.createEl('h4', { text: t('views.graph.title') });
     
-    const canvas = container.createEl('div');
-    canvas.style.width = '100%';
-    canvas.style.height = '500px';
+    this.canvas = container.createEl('canvas');
+    this.context = this.canvas.getContext('2d')!;
+    this.width = container.clientWidth;
+    this.height = 500;
+    this.canvas.width = this.width;
+    this.canvas.height = this.height;
 
-    this.initializeGraph(canvas);
+    this.initializeScales();
+    this.initializeSimulation();
     this.renderGraph();
   }
 
-  private initializeGraph(container: HTMLElement) {
-    const width = container.clientWidth;
-    const height = 500;
+  private initializeScales() {
+    const data = this.prepareGraphData();
+    
+    this.sizeScale = d3.scaleLinear()
+      .domain([0, d3.max(data.nodes, d => d.strength) || 1])
+      .range([5, 20]);
+    
+    this.colorScale = d3.scaleSequential(d3.interpolateBlues)
+      .domain([0, d3.max(data.nodes, d => d.strength) || 1]);
+  }
 
-    this.svg = d3.select(container).append('svg')
-      .attr('width', width)
-      .attr('height', height);
+  private initializeSimulation() {
+    const data = this.prepareGraphData();
+    
+    this.simulation = d3.forceSimulation<GraphNode>()
+      .nodes(data.nodes)
+      .force('link', d3.forceLink<GraphNode, GraphLink>(data.links).id(d => d.id))
+      .force('charge', d3.forceManyBody().strength(-50))
+      .force('center', d3.forceCenter(this.width / 2, this.height / 2))
+      .force('collision', d3.forceCollide<GraphNode>().radius(d => this.sizeScale(d.strength) + 1));
 
-    this.container = this.svg.append('g');
+    this.simulation.on('tick', () => this.render());
+  }
 
-    this.zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
-      .on('zoom', (event) => {
-        this.container.attr('transform', event.transform);
-      });
+  private render() {
+    this.context.clearRect(0, 0, this.width, this.height);
+    
+    
+    this.context.strokeStyle = '#999';
+    this.context.beginPath();
+    this.simulation.force<d3.ForceLink<GraphNode, GraphLink>>('link')!.links().forEach(d => {
+      const sourceNode = this.getNodePosition(d.source);
+      const targetNode = this.getNodePosition(d.target);
+      if (sourceNode && targetNode) {
+        this.context.moveTo(sourceNode.x, sourceNode.y);
+        this.context.lineTo(targetNode.x, targetNode.y);
+      }
+    });
+    this.context.stroke();
 
-    this.svg.call(this.zoomBehavior);
+    
+    this.simulation.nodes().forEach(d => {
+      this.context.fillStyle = this.colorScale(d.strength);
+      this.context.beginPath();
+      this.context.moveTo(d.x!, d.y!);
+      this.context.arc(d.x!, d.y!, this.sizeScale(d.strength), 0, 2 * Math.PI);
+      this.context.fill();
+    });
+  }
 
-    this.simulation = d3.forceSimulation<GraphNode, GraphLink>()
-      .force('link', d3.forceLink<GraphNode, GraphLink>().id(d => d.id))
-      .force('charge', d3.forceManyBody())
-      .force('center', d3.forceCenter(width / 2, height / 2));
+  private getNodePosition(node: string | GraphNode | d3.SimulationNodeDatum): { x: number, y: number } | null {
+    if (typeof node === 'string') {
+
+      const foundNode = this.simulation.nodes().find(n => n.id === node);
+      return foundNode ? { x: foundNode.x!, y: foundNode.y! } : null;
+    } else if (node && 'x' in node && 'y' in node) {
+
+      return { x: node.x!, y: node.y! };
+    }
+    return null;
   }
 
   private renderGraph() {
-    const data = this.prepareGraphData();
-
-    const link = this.container.selectAll('line')
-      .data(data.links)
-      .join('line')
-      .attr('stroke-width', (d: GraphLink) => Math.sqrt(d.value));
-
-    const node = this.container.selectAll<SVGCircleElement, GraphNode>('circle')
-      .data(data.nodes)
-      .join('circle')
-      .attr('r', 5)
-      .attr('fill', (d: GraphNode) => d3.scaleOrdinal(d3.schemeCategory10)(d.group.toString()))
-      .call(this.drag());
-
-    node.append('title')
-      .text((d: GraphNode) => d.id);
-
-    this.simulation
-      .nodes(data.nodes)
-      .on('tick', () => {
-        link
-          .attr('x1', (d: any) => d.source.x)
-          .attr('y1', (d: any) => d.source.y)
-          .attr('x2', (d: any) => d.target.x)
-          .attr('y2', (d: any) => d.target.y);
-
-        node
-          .attr('cx', (d: GraphNode) => d.x!)
-          .attr('cy', (d: GraphNode) => d.y!);
+    d3.select(this.canvas)
+      .call(d3.drag<HTMLCanvasElement, unknown>()
+        .subject((event) => this.findNode(event.x, event.y))
+        .on('start', this.dragstarted.bind(this))
+        .on('drag', this.dragged.bind(this))
+        .on('end', this.dragended.bind(this)) as any)
+      .on('click', (event: MouseEvent) => {
+        const node = this.findNode(event.offsetX, event.offsetY);
+        if (node) this.openNote(node);
+      })
+      .on('mousemove', (event: MouseEvent) => {
+        const node = this.findNode(event.offsetX, event.offsetY);
+        if (node) {
+          this.showNodeInfo(event, node);
+        } else {
+          this.hideNodeInfo();
+        }
       });
-
-    this.simulation.force<d3.ForceLink<GraphNode, GraphLink>>('link')!.links(data.links);
   }
 
-  private drag() {
-    return d3.drag<SVGCircleElement, GraphNode>()
-      .on('start', (event, d) => this.dragstarted(event, d))
-      .on('drag', (event, d) => this.dragged(event, d))
-      .on('end', (event, d) => this.dragended(event, d));
+  private findNode(x: number, y: number): GraphNode | null {
+    const radius = 20;
+    for (let i = this.simulation.nodes().length - 1; i >= 0; --i) {
+      const node = this.simulation.nodes()[i];
+      const dx = x - node.x!;
+      const dy = y - node.y!;
+      if (dx * dx + dy * dy < radius * radius) {
+        return node;
+      }
+    }
+    return null;
   }
 
-  private dragstarted(event: d3.D3DragEvent<SVGCircleElement, GraphNode, unknown>, d: GraphNode) {
+  private dragstarted(event: d3.D3DragEvent<HTMLCanvasElement, unknown, unknown>) {
     if (!event.active) this.simulation.alphaTarget(0.3).restart();
-    d.fx = d.x;
-    d.fy = d.y;
+    const node = event.subject as GraphNode;
+    node.fx = node.x;
+    node.fy = node.y;
   }
 
-  private dragged(event: d3.D3DragEvent<SVGCircleElement, GraphNode, unknown>, d: GraphNode) {
-    d.fx = event.x;
-    d.fy = event.y;
+  private dragged(event: d3.D3DragEvent<HTMLCanvasElement, unknown, unknown>) {
+    const node = event.subject as GraphNode;
+    node.fx = event.x;
+    node.fy = event.y;
   }
 
-  private dragended(event: d3.D3DragEvent<SVGCircleElement, GraphNode, unknown>, d: GraphNode) {
+  private dragended(event: d3.D3DragEvent<HTMLCanvasElement, unknown, unknown>) {
     if (!event.active) this.simulation.alphaTarget(0);
-    d.fx = null;
-    d.fy = null;
+    const node = event.subject as GraphNode;
+    node.fx = null;
+    node.fy = null;
+  }
+
+  private openNote(node: GraphNode) {
+    const file = this.app.vault.getAbstractFileByPath(node.id);
+    if (file instanceof TFile) {
+      this.app.workspace.getLeaf().openFile(file);
+    }
+  }
+
+  private showNodeInfo(event: MouseEvent, node: GraphNode) {
+    const tooltip = d3.select(this.containerEl).append('div')
+      .attr('class', 'graph-tooltip')
+      .style('position', 'absolute')
+      .style('background-color', 'white')
+      .style('padding', '5px')
+      .style('border', '1px solid black')
+      .style('border-radius', '5px')
+      .style('pointer-events', 'none')
+      .style('left', `${event.pageX + 10}px`)
+      .style('top', `${event.pageY - 10}px`);
+
+    tooltip.html(`
+      <strong>${node.id}</strong><br>
+      Strength: ${node.strength.toFixed(2)}<br>
+      Connections: ${node.connections}
+    `);
+  }
+
+  private hideNodeInfo() {
+    d3.select(this.containerEl).selectAll('.graph-tooltip').remove();
   }
 
   prepareGraphData(): GraphData {
@@ -134,11 +205,7 @@ export class GraphView extends ItemView {
         id: conn.file.path,
         group: 1, 
         strength: strengthMap.get(conn.file.path) || 0,
-        index: undefined,
-        x: undefined,
-        y: undefined,
-        vx: undefined,
-        vy: undefined
+        connections: conn.links.length
       });
 
       conn.links.forEach(link => {
