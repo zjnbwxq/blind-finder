@@ -1,14 +1,16 @@
-import { Plugin, WorkspaceLeaf, TFile, Notice, ReferenceCache } from 'obsidian';
+import { Plugin, WorkspaceLeaf, TFile, Notice } from 'obsidian';
 import { t } from './i18n/i18n';
 import { 
   analyzeGraphConnections, 
   detectWeakConnections, 
   detectIsolatedNotes, 
   calculateAdvancedConnectionStrength, 
-  calculateCentrality 
+  calculateCentrality,
+  analyzeContentDepth,
+  extractConcepts,
+  analyzeConceptRelations 
 } from './graphAnalysis';
 import { GraphView, GRAPH_VIEW_TYPE } from './views/GraphView';
-import { GraphNode, GraphLink, GraphData } from './types';
 
 export default class BlindFinderPlugin extends Plugin {
   async onload() {
@@ -37,7 +39,7 @@ export default class BlindFinderPlugin extends Plugin {
   }
 
   onunload() {
-    //console.log(t('common.plugin.unload'));
+    // 卸载插件时的逻辑
   }
 
   async activateView() {
@@ -48,16 +50,11 @@ export default class BlindFinderPlugin extends Plugin {
       leaf = workspace.getRightLeaf(false);
       if (leaf) {
         await leaf.setViewState({ type: GRAPH_VIEW_TYPE, active: true });
-      } else {
-        console.error('Unable to create a new leaf for the graph view');
-        return;
       }
     }
 
-    if (leaf instanceof WorkspaceLeaf) {
+    if (leaf) {
       workspace.revealLeaf(leaf);
-    } else {
-      console.error('Leaf is not an instance of WorkspaceLeaf');
     }
   }
 
@@ -102,17 +99,37 @@ export default class BlindFinderPlugin extends Plugin {
       isolated: isolatedNotes.length
     }));
 
-    //console.log('Top 5 most connected notes:', topConnections);
-    //console.log('Top 5 most central nodes:', topCentralNodes);
+    const depthAnalysis = await Promise.all(files.map(async file => {
+      const content = await this.app.vault.read(file);
+      return analyzeContentDepth(content);
+    }));
+
+    const allContent = await Promise.all(files.map(file => this.app.vault.read(file)));
+    const allConcepts = await extractConcepts(allContent.join(' '));
+    const conceptRelations = await analyzeConceptRelations(
+      allConcepts, 
+      connections,
+      async (file) => await this.app.vault.read(file)
+    );
+
+    // 这里可以添加更多的分析结果处理逻辑
   }
 
   async getFileLinks(file: TFile): Promise<string[]> {
-    const links = await this.app.metadataCache.getFileCache(file)?.links || [];
+    const links = this.app.metadataCache.getFileCache(file)?.links || [];
     return links.map(link => link.link);
   }
 
   async getFileBacklinks(file: TFile): Promise<string[]> {
-    const backlinks = (this.app.metadataCache as any).getBacklinksForFile(file);
-    return backlinks ? Object.keys(backlinks) : [];
+    const resolvedLinks = this.app.metadataCache.resolvedLinks;
+    const backlinks: string[] = [];
+
+    for (const [sourcePath, targetLinks] of Object.entries(resolvedLinks)) {
+      if (targetLinks[file.path]) {
+        backlinks.push(sourcePath);
+      }
+    }
+
+    return backlinks;
   }
 }

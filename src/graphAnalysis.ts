@@ -1,4 +1,5 @@
 import { TFile, MetadataCache } from 'obsidian';
+import nlp from 'compromise';
 
 interface NoteConnection {
   file: TFile;
@@ -6,6 +7,23 @@ interface NoteConnection {
   backlinks: string[];
   lastModified: number;
 }
+
+interface ContentDepthAnalysis {
+  wordCount: number;
+  citationCount: number;
+  headingLevels: number;
+  codeBlockCount: number;
+  formulaCount: number;
+  keyPhrases: string[];
+  overallScore: number;
+}
+
+interface Concept {
+  term: string;
+  frequency: number;
+}
+
+const manager = nlp;
 
 export function analyzeGraphConnections(files: TFile[], metadataCache: MetadataCache): NoteConnection[] {
   return files.map(file => ({
@@ -22,8 +40,16 @@ function getFileLinks(file: TFile, metadataCache: MetadataCache): string[] {
 }
 
 function getFileBacklinks(file: TFile, metadataCache: MetadataCache): string[] {
-  const backlinks = (metadataCache as any).getBacklinksForFile(file);
-  return backlinks ? Object.keys(backlinks) : [];
+  const resolvedLinks = metadataCache.resolvedLinks;
+  const backlinks: string[] = [];
+
+  for (const [sourcePath, targetLinks] of Object.entries(resolvedLinks)) {
+    if (targetLinks[file.path]) {
+      backlinks.push(sourcePath);
+    }
+  }
+
+  return backlinks;
 }
 
 export function detectWeakConnections(connections: NoteConnection[], threshold: number): TFile[] {
@@ -38,36 +64,17 @@ export function detectIsolatedNotes(connections: NoteConnection[]): TFile[] {
     .map(conn => conn.file);
 }
 
-export function calculateConnectionStrength(connections: NoteConnection[]): Map<string, number> {
-  const strengthMap = new Map<string, number>();
-  
-  connections.forEach(conn => {
-    const strength = conn.links.length + conn.backlinks.length;
-    strengthMap.set(conn.file.path, strength);
-  });
-
-  return strengthMap;
-}
-
 export function calculateAdvancedConnectionStrength(connections: NoteConnection[]): Map<string, number> {
   const strengthMap = new Map<string, number>();
   const now = Date.now();
   
   connections.forEach(conn => {
-    let strength = 0;
-    
-    
-    strength += conn.links.length * 1;
-    
-    
-    strength += conn.backlinks.length * 1.5;
-    
+    let strength = conn.links.length + conn.backlinks.length * 1.5;
     
     const daysSinceModified = (now - conn.lastModified) / (1000 * 60 * 60 * 24);
     if (daysSinceModified <= 30) {
       strength += (30 - daysSinceModified) / 10;
     }
-    
     
     const depthScore = calculateDepthScore(conn, connections);
     strength += depthScore;
@@ -88,7 +95,6 @@ function calculateDepthScore(conn: NoteConnection, allConnections: NoteConnectio
     }
   });
   
-
   indirectBacklinks = new Set([...indirectBacklinks].filter(x => !directBacklinks.has(x)));
   
   return directBacklinks.size + (indirectBacklinks.size * 0.5);
@@ -97,7 +103,6 @@ function calculateDepthScore(conn: NoteConnection, allConnections: NoteConnectio
 export function calculateCentrality(connections: NoteConnection[]): Map<string, number> {
   const centralityMap = new Map<string, number>();
   const graph = new Map<string, Set<string>>();
-
 
   connections.forEach(conn => {
     if (!graph.has(conn.file.path)) {
@@ -112,10 +117,83 @@ export function calculateCentrality(connections: NoteConnection[]): Map<string, 
     });
   });
 
-
   graph.forEach((neighbors, node) => {
     centralityMap.set(node, neighbors.size);
   });
 
   return centralityMap;
+}
+
+export async function analyzeContentDepth(content: string): Promise<ContentDepthAnalysis> {
+  const wordCount = content.split(/\s+/).length;
+  const citationCount = (content.match(/\[\[.*?\]\]/g) || []).length;
+  const headingLevels = Math.max(...(content.match(/^#+/gm) || []).map(h => h.length));
+  const codeBlockCount = (content.match(/```[\s\S]*?```/g) || []).length;
+  const formulaCount = (content.match(/\$\$[\s\S]*?\$\$/g) || []).length;
+  
+  const keyPhrases = await extractKeyPhrases(content);
+
+  const overallScore = (
+    wordCount * 0.3 +
+    citationCount * 0.2 +
+    headingLevels * 0.2 +
+    codeBlockCount * 0.15 +
+    formulaCount * 0.15
+  ) / 5;
+
+  return {
+    wordCount,
+    citationCount,
+    headingLevels,
+    codeBlockCount,
+    formulaCount,
+    keyPhrases,
+    overallScore
+  };
+}
+
+export async function extractConcepts(content: string): Promise<Concept[]> {
+  const doc = nlp(content);
+  const terms = doc.terms().out('array');
+  
+ 
+  const frequencyMap = new Map<string, number>();
+  terms.forEach((term: string) => {
+    const normalized = term.toLowerCase();
+    frequencyMap.set(normalized, (frequencyMap.get(normalized) || 0) + 1);
+  });
+
+ 
+  const concepts = Array.from(frequencyMap.entries())
+    .map(([term, frequency]) => ({ term, frequency }))
+    .sort((a, b) => b.frequency - a.frequency)
+    .slice(0, 20); 
+
+  return concepts;
+}
+
+export async function analyzeConceptRelations(concepts: Concept[], connections: NoteConnection[], getFileContent: (file: TFile) => Promise<string>): Promise<Map<string, string[]>> {
+  const conceptRelations = new Map<string, string[]>();
+
+  for (const concept of concepts) {
+    const relatedTerms = new Set<string>();
+    
+    for (const conn of connections) {
+      const content = await getFileContent(conn.file);
+      const doc = nlp(content);
+      
+      if (doc.has(concept.term)) {
+        doc.terms().forEach(term => relatedTerms.add(term.out('normal')));
+      }
+    }
+
+    conceptRelations.set(concept.term, Array.from(relatedTerms).filter(t => t !== concept.term));
+  }
+
+  return conceptRelations;
+}
+
+export async function extractKeyPhrases(content: string): Promise<string[]> {
+  const doc = nlp(content);
+  return doc.topics().out('array');
 }

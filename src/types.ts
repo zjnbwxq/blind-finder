@@ -1,4 +1,5 @@
 import { SimulationNodeDatum } from 'd3-force';
+import { TFile } from 'obsidian';
 
 export interface GraphNode extends SimulationNodeDatum {
   id: string;
@@ -18,3 +19,14 @@ export interface GraphData {
   links: GraphLink[];
 }
 
+export interface Concept {
+  term: string;
+  frequency: number;
+}
+
+export interface NoteConnection {
+  file: TFile;
+  links: string[];
+  backlinks: string[];
+  lastModified: number;
+}
